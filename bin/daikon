@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+# Authors:
+# Samuel Läubli <laeubli@cl.uzh.ch>
+# Mathias Müller <mmueller@cl.uzh.ch>
+
+import os
+import sys
+import time
+import logging
+import argparse
+
+from daikon import constants as C
+
+logger = logging.getLogger(__name__)
+
+
+def get_argument_parser():
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest='action', help='A simple encoder-'
+                                       'decoder machine translation model')
+    parser.add_argument('-q', '--quiet', action='store_true',
+                        help='No logging output except for warnings and errors.')
+    # train
+    train = subparsers.add_parser('train', help='Train a machine translation model.')
+    train.add_argument('--source', type=str, required=True, dest='source_data',
+                       help='the source training data, a tokenized, plain text file.')
+    train.add_argument('--target', type=str, required=True, dest='target_data',
+                       help='the target training data, a tokenized, plain text file.')
+    train.add_argument('-e', '--epochs', type=int, default=10,
+                       help='the number of training epochs.')
+    train.add_argument('-b', '--batch_size', type=int, default=20)
+    train.add_argument('--source_vocab_max_size', type=int, default=C.SOURCE_VOCAB_SIZE,
+                       help='Only keep n most frequent words; treat others as <unk>.')
+    train.add_argument('--target_vocab_max_size', type=int, default=C.TARGET_VOCAB_SIZE,
+                       help='Only keep n most frequent words; treat others as <unk>.')
+    train.add_argument('-m', '--save_to', default='model',
+                       help='the folder to store model files.')
+    train.add_argument('-l', '--log_to', default='logs',
+                       help='the folder to store log files. Use for monitoring with tensorboard.')
+    train.add_argument('-s', '--sample_after_epoch', default=False, action="store_true",
+                       help='Sample translations from the model after each epoch.')
+
+    # translate
+    sample = subparsers.add_parser('translate', help='Use a trained model to translate new text.')
+    sample.add_argument('-m', '--load_from', default='model',
+                        help='the folder to load model and vocabulary files from.')
+    sample.add_argument('-i', '--input', type=str, required=False, default=None,
+                        help='File that should be translated, one sentence per line.' +
+                        ' If omitted, daikon assumes input from STDIN.')
+    sample.add_argument('-o', '--output', type=str, required=False, default=None,
+                        help='File translations should be written to. If omitted, daikon writes to STDOUT.')
+
+    # score
+    score = subparsers.add_parser('score', help='Use a trained model to score parallel text.')
+    score.add_argument('-m', '--load_from', default='model',
+                       help='the folder to load model and vocabulary files from.')
+    score.add_argument('-a', '--corpus_average', default=False, action="store_true",
+                       help='Output one single score that is a corpus-level average.')
+    score.add_argument('-n', '--normalize', default=False, action="store_true",
+                       help='Normalize scores by target sequence length.')
+    score.add_argument('--source', type=str, required=True, dest='source_data',
+                       help='the source training data, a tokenized, plain text file.')
+    score.add_argument('--target', type=str, required=True, dest='target_data',
+                       help='the target training data, a tokenized, plain text file.')
+
+    return parser
+
+
+def action_train(args):
+    from daikon.train import train
+    train(**vars(args))
+
+
+def action_score(args):
+    from daikon.score import score
+    result = score(**vars(args))
+    if args.corpus_average:
+        print('Perplexity: {0:.2f}'.format(result))
+    else:
+        result = [str(r) for r in result]
+        print("\n".join(result))
+
+
+def action_translate(args):
+    if args.input:
+        input_file_handle = open(args.input, "r")
+    else:
+        logging.info("Argument --input not given, assuming input from STDIN.")
+        input_file_handle = sys.stdin
+
+    if args.output:
+        output_file_handle = open(args.output, "w")
+    else:
+        output_file_handle = sys.stdout
+
+    from daikon.translate import translate_file
+
+    tic = time.time()
+
+    translate_file(load_from=args.load_from, input_file_handle=input_file_handle, output_file_handle=output_file_handle)
+
+    taken = time.time() - tic
+    m, s = divmod(taken, 60)
+    h, m = divmod(m, 60)
+
+    logger.info("Finished. Overall translation time: %d:%02d:%02d" % (h, m, s))
+
+
+def _set_up_logging(args):
+    """
+    Set up logging to file and standard error.
+    """
+    format_ = '%(asctime)s - %(levelname)s - %(message)s'
+    logger = logging.getLogger()
+
+    # determine console log level
+    log_level = logging.WARNING if args.quiet else logging.DEBUG
+
+    # log to STDERR
+    logging.basicConfig(level=log_level,
+                        format=format_,)
+
+    # log to logfile
+    if args.action == 'train':
+        logfile = os.path.join(args.log_to, C.TRAINING_LOG_FILENAME)
+        file_handler = logging.FileHandler(filename=logfile, mode="w")
+        file_handler.setLevel(logging.DEBUG)
+        formatter = logging.Formatter(format_)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+    logger.info(args)
+
+
+def main():
+    parser = get_argument_parser()
+    if len(sys.argv) <= 1:
+        parser.print_help()
+    args = parser.parse_args()
+
+    _set_up_logging(args)
+
+    # delegate
+    if args.action == 'train':
+        action_train(args)
+    elif args.action == 'score':
+        action_score(args)
+    elif args.action == 'translate':
+        action_translate(args)
+
+
+if __name__ == '__main__':
+    main()
